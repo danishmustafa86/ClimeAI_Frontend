@@ -1,8 +1,9 @@
-const API_BASE_URL = "https://zainattiq-climeai.hf.space/api";
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000/api";
 
 export interface ChatMessage {
   role: "user" | "bot";
   content: string;
+  audio_url?: string;
 }
 
 export interface ChatResponse {
@@ -80,9 +81,6 @@ export const sendVoiceMessage = async (userId: string, audioFile: File): Promise
   return response.json();
 };
 
-export const getAudioUrl = (userId: string): string => {
-  return `${API_BASE_URL}/chat/audio/${userId}`;
-};
 
 export const getChatHistory = async (userId: string): Promise<ChatHistoryResponse> => {
   const response = await fetch(`${API_BASE_URL}/chatHistory/${userId}`);

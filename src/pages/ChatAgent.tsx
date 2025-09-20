@@ -4,7 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Send, Bot, User, Loader2, Mic, MicOff, Volume2, VolumeX } from "lucide-react";
-import { sendChatMessage, sendVoiceMessage, getChatHistory, getAudioUrl, type ChatMessage } from "@/utils/api";
+import { sendChatMessage, sendVoiceMessage, getChatHistory, type ChatMessage } from "@/utils/api";
 import { getUserId } from "@/utils/user";
 import { useToast } from "@/hooks/use-toast";
 
@@ -14,12 +14,11 @@ const ChatAgent = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
   const [isRecording, setIsRecording] = useState(false);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [currentAudioUrl, setCurrentAudioUrl] = useState<string | null>(null);
+  const [playingAudioId, setPlayingAudioId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioRefs = useRef<Map<string, HTMLAudioElement>>(new Map());
   const { toast } = useToast();
 
   const userId = getUserId();
@@ -107,12 +106,13 @@ const ChatAgent = () => {
     try {
       const response = await sendVoiceMessage(userId, audioFile);
       
-      // Add bot response to UI
-      const botMessage: ChatMessage = { role: "bot", content: response.response };
+      // Add bot response to UI with audio URL
+      const botMessage: ChatMessage = { 
+        role: "bot", 
+        content: response.response,
+        audio_url: response.audio_url
+      };
       setMessages(prev => [...prev, botMessage]);
-      
-      // Always set audio URL for playback (backend generates audio for every response)
-      setCurrentAudioUrl(getAudioUrl(userId));
     } catch (error) {
       console.error("Failed to send voice message:", error);
       toast({
@@ -125,31 +125,59 @@ const ChatAgent = () => {
     }
   };
 
-  const playAudio = () => {
-    if (currentAudioUrl && audioRef.current) {
-      audioRef.current.play().catch((error) => {
-        console.error("Error playing audio:", error);
+  const playAudio = (messageIndex: number) => {
+    const message = messages[messageIndex];
+    if (!message.audio_url) return;
+
+    // Stop any currently playing audio
+    stopAllAudio();
+
+    // Get or create audio element for this message
+    let audioElement = audioRefs.current.get(messageIndex.toString());
+    if (!audioElement) {
+      audioElement = new Audio(message.audio_url);
+      audioElement.addEventListener('ended', () => setPlayingAudioId(null));
+      audioElement.addEventListener('error', (e) => {
+        console.error("Audio loading error:", e);
         toast({
           title: "Audio Error",
-          description: "Failed to play audio. Please try again.",
+          description: "Failed to load audio. Please try again.",
           variant: "destructive",
         });
-        setIsPlaying(false);
+        setPlayingAudioId(null);
       });
-      setIsPlaying(true);
+      audioRefs.current.set(messageIndex.toString(), audioElement);
+    }
+
+    audioElement.play().catch((error) => {
+      console.error("Error playing audio:", error);
+      toast({
+        title: "Audio Error",
+        description: "Failed to play audio. Please try again.",
+        variant: "destructive",
+      });
+      setPlayingAudioId(null);
+    });
+    setPlayingAudioId(messageIndex.toString());
+  };
+
+  const stopAudio = (messageIndex: number) => {
+    const audioElement = audioRefs.current.get(messageIndex.toString());
+    if (audioElement) {
+      audioElement.pause();
+      audioElement.currentTime = 0;
+    }
+    if (playingAudioId === messageIndex.toString()) {
+      setPlayingAudioId(null);
     }
   };
 
-  const stopAudio = () => {
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.currentTime = 0;
-      setIsPlaying(false);
-    }
-  };
-
-  const handleAudioEnded = () => {
-    setIsPlaying(false);
+  const stopAllAudio = () => {
+    audioRefs.current.forEach((audioElement) => {
+      audioElement.pause();
+      audioElement.currentTime = 0;
+    });
+    setPlayingAudioId(null);
   };
 
   const handleSendMessage = async (e: React.FormEvent) => {
@@ -167,12 +195,13 @@ const ChatAgent = () => {
     try {
       const response = await sendChatMessage(userId, userMessage);
       
-      // Add bot response to UI
-      const botMessage: ChatMessage = { role: "bot", content: response.response };
+      // Add bot response to UI with audio URL
+      const botMessage: ChatMessage = { 
+        role: "bot", 
+        content: response.response,
+        audio_url: response.audio_url
+      };
       setMessages(prev => [...prev, botMessage]);
-      
-      // Always set audio URL for playback (backend generates audio for every response)
-      setCurrentAudioUrl(getAudioUrl(userId));
     } catch (error) {
       console.error("Failed to send message:", error);
       toast({
@@ -258,21 +287,21 @@ const ChatAgent = () => {
                         }`}
                       >
                         <p className="whitespace-pre-wrap">{message.content}</p>
-                        {message.role === "bot" && currentAudioUrl && (
+                        {message.role === "bot" && message.audio_url && (
                           <div className="mt-2 flex items-center space-x-2">
                             <Button
                               size="sm"
                               variant="ghost"
-                              onClick={isPlaying ? stopAudio : playAudio}
+                              onClick={playingAudioId === index.toString() ? () => stopAudio(index) : () => playAudio(index)}
                               className="h-6 px-2 text-xs"
                             >
-                              {isPlaying ? (
+                              {playingAudioId === index.toString() ? (
                                 <VolumeX className="h-3 w-3" />
                               ) : (
                                 <Volume2 className="h-3 w-3" />
                               )}
                               <span className="ml-1">
-                                {isPlaying ? "Stop" : "Listen"}
+                                {playingAudioId === index.toString() ? "Stop" : "Listen"}
                               </span>
                             </Button>
                           </div>
@@ -329,23 +358,6 @@ const ChatAgent = () => {
                 )}
               </Button>
               
-              {/* Audio Playback Button */}
-              {currentAudioUrl && (
-                <Button
-                  type="button"
-                  variant={isPlaying ? "default" : "outline"}
-                  onClick={isPlaying ? stopAudio : playAudio}
-                  disabled={isLoading}
-                  className="px-3"
-                  title={isPlaying ? "Stop audio" : "Play audio response"}
-                >
-                  {isPlaying ? (
-                    <VolumeX className="h-4 w-4" />
-                  ) : (
-                    <Volume2 className="h-4 w-4" />
-                  )}
-                </Button>
-              )}
               
               {/* Send Button */}
               <Button 
@@ -360,29 +372,6 @@ const ChatAgent = () => {
                 )}
               </Button>
             </form>
-            
-            {/* Audio Element for Playback */}
-            {currentAudioUrl && (
-              <audio
-                ref={audioRef}
-                src={currentAudioUrl}
-                onEnded={handleAudioEnded}
-                onError={(e) => {
-                  console.error("Audio loading error:", e);
-                  toast({
-                    title: "Audio Error",
-                    description: "Failed to load audio. Please try again.",
-                    variant: "destructive",
-                  });
-                  setIsPlaying(false);
-                }}
-                onLoadStart={() => console.log("Audio loading started")}
-                onCanPlay={() => console.log("Audio can play")}
-                onDurationChange={(e) => console.log("Audio duration:", e.currentTarget.duration)}
-                preload="metadata"
-                className="hidden"
-              />
-            )}
             
             {/* Recording Status */}
             {isRecording && (
